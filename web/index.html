@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Go Expression Parser</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #182c38; background: #f3f5f6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 960px; margin: 48px auto; padding: 0 20px; }
+    .eyebrow { color: #286b60; font-size: 12px; letter-spacing: .15em; font-weight: 700; }
+    h1 { font-size: clamp(26px, 5vw, 38px); margin: 10px 0; }
+    p { line-height: 1.7; color: #536570; }
+    section { background: white; border: 1px solid #dce3e6; border-radius: 12px; padding: 24px; margin-top: 20px; min-width: 0; }
+    label { display: block; font-weight: 600; margin-bottom: 10px; }
+    .input-row { display: flex; gap: 10px; }
+    input { min-width: 0; flex: 1; border: 1px solid #aebfc6; border-radius: 6px; padding: 13px; font: 18px ui-monospace, monospace; }
+    button { cursor: pointer; border: 0; border-radius: 6px; padding: 12px 18px; background: #206b5d; color: white; font: inherit; }
+    button:disabled { opacity: .6; cursor: wait; }
+    :focus-visible { outline: 3px solid #3185ba; outline-offset: 3px; }
+    .examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .examples button { background: #edf3f1; color: #285b51; font: 13px ui-monospace, monospace; padding: 8px 10px; }
+    .hint { font-size: 13px; margin-bottom: 0; }
+    #result { display: block; font: 600 36px ui-monospace, monospace; overflow-wrap: anywhere; }
+    #error { color: #a22e2e; margin: 12px 0 0; }
+    #error:empty { display: none; }
+    h2 { font-size: 16px; margin: 0 0 16px; }
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .tokens { display: flex; flex-wrap: wrap; gap: 8px; }
+    .token { padding: 8px 12px; border: 1px solid #dce3e6; border-radius: 6px; font-family: ui-monospace, monospace; }
+    .token small { display: block; font: 10px system-ui, sans-serif; color: #61717a; margin-bottom: 4px; }
+    #tree { overflow: auto; max-height: 420px; padding: 4px; }
+    #tree ul { list-style: none; margin: 10px 0 0 12px; padding-left: 20px; border-left: 1px solid #c4d5cf; }
+    #tree li { margin: 10px 0; }
+    .node { display: inline-block; background: #edf3f1; padding: 6px 12px; border-radius: 5px; font-family: ui-monospace, monospace; }
+    summary { margin-top: 20px; cursor: pointer; font-size: 13px; }
+    pre { overflow: auto; max-height: 300px; font-size: 12px; }
+    @media (max-width: 640px) { main { margin-top: 24px; } .columns { grid-template-columns: 1fr; gap: 0; } section { padding: 18px; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">GO EXPRESSION PARSER</div>
+  <h1>数式から、構造を見る。</h1>
+  <p>数式を入力して、字句解析 → 構文解析 → ASTの評価を確認できます。</p>
+  <section>
+    <form id="form">
+      <label for="expression">数式</label>
+      <div class="input-row">
+        <input id="expression" name="expression" value="1 + 2 * 3" maxlength="1024" autocomplete="off" spellcheck="false" aria-describedby="syntax-hint">
+        <button id="submit" type="submit">実行</button>
+      </div>
+    </form>
+    <div class="examples" aria-label="サンプル式">
+      <button type="button">1 + 2 * 3</button>
+      <button type="button">(1 + 2) * 3</button>
+      <button type="button">-4 + 10 / 2</button>
+      <button type="button">1 / 0</button>
+    </div>
+    <p class="hint" id="syntax-hint">四則演算・括弧・小数・単項符号（+ / −）に対応。計算はGo側で行います。</p>
+  </section>
+  <section aria-live="polite" aria-atomic="true">
+    <h2>計算結果</h2>
+    <output id="result">—</output>
+    <p id="error" role="alert"></p>
+  </section>
+  <div class="columns">
+    <section>
+      <h2>01 / トークン（字句解析）</h2>
+      <div id="tokens" class="tokens"></div>
+      <p class="hint">文字列を数値・演算子・括弧に分割します。EOFは入力の終端です。</p>
+    </section>
+    <section>
+      <h2>02 / AST（構文解析）</h2>
+      <div id="tree"></div>
+      <p class="hint">演算子の下に計算対象が並びます。二項演算の子は上から左辺・右辺です。括弧によるまとまりは木の構造に反映されます。</p>
+      <details><summary>ASTをJSONで見る</summary><pre id="json"></pre></details>
+    </section>
+  </div>
+</main>
+<script>
+  const form = document.querySelector('#form');
+  const input = document.querySelector('#expression');
+  const result = document.querySelector('#result');
+  const error = document.querySelector('#error');
+  const tokens = document.querySelector('#tokens');
+  const tree = document.querySelector('#tree');
+  const json = document.querySelector('#json');
+  const submit = document.querySelector('#submit');
+  let activeRequest;
+
+  function renderNode(node) {
+    const item = document.createElement('li');
+    const label = document.createElement('span');
+    label.className = 'node';
+    label.textContent = node.kind === 'unary' ? `${node.value} (単項)` : node.value;
+    item.append(label);
+    const children = [node.left, node.right].filter(Boolean);
+    if (children.length) {
+      const list = document.createElement('ul');
+      children.forEach(child => list.append(renderNode(child)));
+      item.append(list);
+    }
+    return item;
+  }
+
+  async function evaluate() {
+    activeRequest?.abort();
+    const request = new AbortController();
+    activeRequest = request;
+    submit.disabled = true;
+    result.textContent = '—';
+    error.textContent = '';
+    tokens.replaceChildren();
+    tree.replaceChildren();
+    json.textContent = '';
+    try {
+      const response = await fetch(`/api/evaluate?${new URLSearchParams({expression: input.value})}`, {signal: request.signal});
+      const data = await response.json();
+      if (request.signal.aborted) return;
+      for (const token of data.tokens ?? []) {
+        const chip = document.createElement('span');
+        chip.className = 'token';
+        const kind = document.createElement('small');
+        kind.textContent = token.kind;
+        chip.append(kind, document.createTextNode(token.text || 'EOF'));
+        tokens.append(chip);
+      }
+      if (data.ast) {
+        const root = document.createElement('ul');
+        root.append(renderNode(data.ast));
+        tree.append(root);
+        json.textContent = JSON.stringify(data.ast, null, 2);
+      }
+      if (!response.ok) {
+        error.textContent = data.error || '計算に失敗しました。';
+      } else {
+        result.textContent = String(data.result);
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') error.textContent = '通信に失敗しました。Goサーバーが起動しているか確認してください。';
+    } finally {
+      if (activeRequest === request) submit.disabled = false;
+    }
+  }
+  form.addEventListener('submit', event => { event.preventDefault(); evaluate(); });
+  document.querySelectorAll('.examples button').forEach(button => {
+    button.addEventListener('click', () => { input.value = button.textContent; evaluate(); });
+  });
+  evaluate();
+</script>
+</body>
+</html>
