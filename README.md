@@ -5,11 +5,9 @@ Goの標準ライブラリだけで、字句解析・再帰下降構文解析・
 
 ## 起動
 
-Go 1.22以降が必要です。Node.jsやnpm、外部Goモジュールは不要です。
+Go 1.227以降が必要です。Node.jsやnpm、外部Goモジュールは不要です。
 
 ```sh
-git clone https://github.com/taako-502/go-expression-parser.git
-cd go-expression-parser
 go run .
 ```
 
